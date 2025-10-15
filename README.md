@@ -6,6 +6,8 @@ A modern, user-friendly desktop application for exporting music files from M3U/M
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)
 
+<img width="701" height="686" alt="2025-10-15 23_31_39-M3uFileExporter – m3u_exporter py" src="https://github.com/user-attachments/assets/54b1920c-c5d1-4f6f-88e5-237f9ddf6c3c" />
+
 ## 🎵 Features
 
 ### Playlist Management
@@ -27,7 +29,7 @@ A modern, user-friendly desktop application for exporting music files from M3U/M
 ## 📋 Requirements
 
 - Python 3.7 or higher
-- tkinter
+- tkinter with dnd support
 - Standard library modules: `os`, `shutil`, `pathlib`, `re`, `logging`
 
 ## 🚀 Installation
@@ -37,3 +39,4 @@ A modern, user-friendly desktop application for exporting music files from M3U/M
 git clone https://github.com/yourusername/m3u-playlist-exporter.git
 cd m3u-playlist-exporter
 python m3u_exporter.py
+
