@@ -64,7 +64,6 @@ class M3UExporter:
         self.files_listbox.bind("<Button-3>", self.show_context_menu)
         # For Mac users (Command+Click or Control+Click)
         self.files_listbox.bind("<Button-2>", self.show_context_menu)
-        self.files_listbox.bind("<Control-Button-1>", self.show_context_menu)
 
         btn_frame = tk.Frame(source_frame)
         btn_frame.pack(fill=tk.X, pady=(5, 0))
@@ -191,12 +190,12 @@ class M3UExporter:
             # Update export button state
             self.check_ready_to_export()
 
-            # Show result message
+            # Show result message if something was skipped
             if added_count > 0:
                 msg = f"Added {added_count} playlist(s)"
                 if skipped_count > 0:
                     msg += f"\nSkipped {skipped_count} file(s)"
-                messagebox.showinfo("Success", msg)
+                    messagebox.showinfo("Success", msg)
             elif skipped_count > 0:
                 messagebox.showwarning("Warning",
                                        f"No valid M3U/M3U8 files were added.\n"
