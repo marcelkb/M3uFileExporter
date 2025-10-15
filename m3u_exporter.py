@@ -1,11 +1,15 @@
+import logging
 import os
 import re
 import shutil
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from tkinterdnd2 import DND_FILES, TkinterDnD
 from loguru import logger
 import platform
 import subprocess
+
 
 class M3UExporter:
     def __init__(self, root):
@@ -22,6 +26,7 @@ class M3UExporter:
         self.open_outputfolder = tk.BooleanVar(value=True)
 
         self.setup_ui()
+        self.setup_drag_drop()
 
     def setup_ui(self):
         main_frame = tk.Frame(self.root, padx=15, pady=15)
@@ -122,6 +127,145 @@ class M3UExporter:
         self.start_button.pack(side=tk.RIGHT, padx=(5, 0))
 
         tk.Button(bottom_frame, text="Exit", command=self.root.quit, width=15, height=2).pack(side=tk.RIGHT)
+
+    def setup_drag_drop(self):
+        """Setup drag and drop for playlist listbox"""
+        self.files_listbox.drop_target_register(DND_FILES)
+        self.files_listbox.dnd_bind('<<Drop>>', self.on_drop)
+        self.files_listbox.dnd_bind('<<DragEnter>>', self.on_drag_enter)
+        self.files_listbox.dnd_bind('<<DragLeave>>', self.on_drag_leave)
+
+        # Enable dragging items out of the listbox
+        self.files_listbox.bind('<ButtonPress-1>', self.on_drag_start)
+        self.files_listbox.bind('<B1-Motion>', self.on_drag_motion)
+        self.files_listbox.bind('<ButtonRelease-1>', self.on_drag_release)
+
+        # Store drag state
+        self.drag_data = {'item': None, 'x': 0, 'y': 0, 'dragging': False}
+
+    def on_drag_enter(self, event):
+        """Visual feedback when dragging over"""
+        self.files_listbox.configure(background='#e3f2fd')
+        return event.action
+
+    def on_drag_leave(self, event):
+        """Remove visual feedback"""
+        self.files_listbox.configure(background='white')
+        return event.action
+
+    def on_drop(self, event):
+        """Handle dropped files"""
+        try:
+            # Get the dropped files
+            files = self.root.tk.splitlist(event.data)
+
+            added_count = 0
+            skipped_count = 0
+
+            for file_path in files:
+                # Clean the path (remove curly braces if present on Windows)
+                file_path = file_path.strip('{}').strip('"').strip("'")
+
+                # Check if file exists
+                if not os.path.exists(file_path):
+                    logger.warning(f"File does not exist: {file_path}")
+                    skipped_count += 1
+                    continue
+
+                # Check if it's an m3u or m3u8 file
+                if file_path.lower().endswith(('.m3u', '.m3u8')):
+                    # Check if already added
+                    if file_path not in self.m3u_files:
+                        self.m3u_files.append(file_path)  # ADD to list, not assign to dict
+                        display_name = os.path.basename(file_path)
+                        self.files_listbox.insert(tk.END, display_name)
+                        added_count += 1
+                        logger.info(f"Added playlist via drag & drop: {display_name}")
+                    else:
+                        logger.info(f"Playlist already added: {file_path}")
+                        skipped_count += 1
+                else:
+                    logger.warning(f"Skipped non-M3U file: {file_path}")
+                    skipped_count += 1
+
+            # Update export button state
+            self.check_ready_to_export()
+
+            # Show result message
+            if added_count > 0:
+                msg = f"Added {added_count} playlist(s)"
+                if skipped_count > 0:
+                    msg += f"\nSkipped {skipped_count} file(s)"
+                messagebox.showinfo("Success", msg)
+            elif skipped_count > 0:
+                messagebox.showwarning("Warning",
+                                       f"No valid M3U/M3U8 files were added.\n"
+                                       f"Skipped {skipped_count} file(s).")
+
+        except Exception as e:
+            logger.error(f"Error handling dropped files: {str(e)}")
+            messagebox.showerror("Error", f"Failed to process dropped files:\n{str(e)}")
+
+    def on_drag_start(self, event):
+        """Start dragging an item from the listbox"""
+        # Get the item under the cursor
+        index = self.files_listbox.nearest(event.y)
+        if index >= 0 and index < self.files_listbox.size():
+            self.drag_data['item'] = index
+            self.drag_data['x'] = event.x
+            self.drag_data['y'] = event.y
+            self.drag_data['dragging'] = False
+
+    def on_drag_motion(self, event):
+        """Track mouse motion during drag"""
+        if self.drag_data['item'] is not None:
+            # Calculate distance moved
+            dx = abs(event.x - self.drag_data['x'])
+            dy = abs(event.y - self.drag_data['y'])
+
+            # If moved more than 10 pixels, consider it a drag
+            if dx > 10 or dy > 10:
+                self.drag_data['dragging'] = True
+
+                # Change cursor to indicate drag-to-delete
+                self.files_listbox.config(cursor="X_cursor")
+
+    def on_drag_release(self, event):
+        """Handle drag release - delete if dragged outside"""
+        if self.drag_data['item'] is not None and self.drag_data['dragging']:
+            # Get the widget boundaries
+            listbox_widget = self.files_listbox
+            widget_x = listbox_widget.winfo_rootx()
+            widget_y = listbox_widget.winfo_rooty()
+            widget_width = listbox_widget.winfo_width()
+            widget_height = listbox_widget.winfo_height()
+
+            # Get absolute mouse position
+            abs_x = event.x_root
+            abs_y = event.y_root
+
+            # Check if mouse is outside the listbox
+            outside = (abs_x < widget_x or
+                       abs_x > widget_x + widget_width or
+                       abs_y < widget_y or
+                       abs_y > widget_y + widget_height)
+
+            if outside:
+                # Remove the item
+                index = self.drag_data['item']
+                playlist_name = self.files_listbox.get(index)
+
+                # Confirm deletion
+                if messagebox.askyesno("Remove Playlist",
+                                       f"Remove '{playlist_name}' from the list?"):
+                    self.files_listbox.delete(index)
+                    del self.m3u_files[index]
+                    logger.info(f"Removed playlist via drag-out: {playlist_name}")
+                    self.check_ready_to_export()
+
+        # Reset cursor and drag data
+        self.files_listbox.config(cursor="")
+        self.drag_data = {'item': None, 'x': 0, 'y': 0, 'dragging': False}
 
     def show_context_menu(self, event):
         """Display context menu at cursor position"""
@@ -455,7 +599,7 @@ class M3UExporter:
 
 
 def main():
-    root = tk.Tk()
+    root = TkinterDnD.Tk()
     app = M3UExporter(root)
     root.mainloop()
 
