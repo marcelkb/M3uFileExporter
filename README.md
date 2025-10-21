@@ -39,4 +39,7 @@ A modern, user-friendly desktop application for exporting music files from M3U/M
 git clone https://github.com/yourusername/m3u-playlist-exporter.git
 cd m3u-playlist-exporter
 python m3u_exporter.py
-
+```
+2. **Install with pyinstaller:**
+```bash
+pyinstaller --onefile --noconsole --icon=icon.png --add-data "icon.png;." --name "M3U Copy Tool" m3u_exporter.py

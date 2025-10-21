@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -17,6 +18,8 @@ class M3UExporter:
         self.root.title("M3U Copy Tool")
         self.root.geometry("700x650")  # Increased height from 550 to 600
         self.root.resizable(True, True)
+        icon_path = self.resource_path('icon.png')
+        root.iconphoto(True, tk.PhotoImage(file=icon_path))  # Works everywhere
 
         self.m3u_files = []
         self.output_folder = None
@@ -27,6 +30,13 @@ class M3UExporter:
 
         self.setup_ui()
         self.setup_drag_drop()
+
+    def resource_path(self, relative_path):
+        try:
+            base_path = sys._MEIPASS
+        except Exception:
+            base_path = os.path.abspath(".")
+        return os.path.join(base_path, relative_path)
 
     def setup_ui(self):
         main_frame = tk.Frame(self.root, padx=15, pady=15)
