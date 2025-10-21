@@ -10,16 +10,18 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 from loguru import logger
 import platform
 import subprocess
+import time
+import threading
 
 
 class M3UExporter:
     def __init__(self, root):
         self.root = root
         self.root.title("M3U Copy Tool")
-        self.root.geometry("700x650")  # Increased height from 550 to 600
+        self.root.geometry("700x700")
         self.root.resizable(True, True)
         icon_path = self.resource_path('icon.png')
-        root.iconphoto(True, tk.PhotoImage(file=icon_path))  # Works everywhere
+        root.iconphoto(True, tk.PhotoImage(file=icon_path))
 
         self.m3u_files = []
         self.output_folder = None
@@ -27,6 +29,16 @@ class M3UExporter:
         self.index_format = tk.StringVar(value="underscore")
         self.create_subfolder = tk.BooleanVar(value=True)
         self.open_outputfolder = tk.BooleanVar(value=True)
+
+        # Time estimation variables
+        self.start_time = None
+        self.files_processed = 0
+
+        # Abort flag
+        self.abort_flag = False
+
+        # Thread for export operation
+        self.export_thread = None
 
         self.setup_ui()
         self.setup_drag_drop()
@@ -124,18 +136,94 @@ class M3UExporter:
 
         self.status_label = tk.Label(progress_frame, text="Ready", anchor=tk.W)
         self.status_label.pack(fill=tk.X)
+
+        # Time estimation label
+        self.time_label = tk.Label(progress_frame, text="", anchor=tk.E, font=('Arial', 8), fg='gray')
+        self.time_label.pack(fill=tk.X, pady=(2, 0))
+
         self.progress = ttk.Progressbar(progress_frame, orient=tk.HORIZONTAL, mode='determinate')
         self.progress.pack(fill=tk.X, pady=(5, 0))
 
         bottom_frame = tk.Frame(main_frame)
         bottom_frame.pack(fill=tk.X)
 
-        self.start_button = tk.Button(bottom_frame, text="Start Copy", command=self.export_files,
+        self.start_button = tk.Button(bottom_frame, text="Start Copy", command=self.start_export,
                                       bg="#4CAF50", fg="white", font=('Arial', 10, 'bold'),
                                       width=15, height=2, state=tk.DISABLED)
         self.start_button.pack(side=tk.RIGHT, padx=(5, 0))
 
-        tk.Button(bottom_frame, text="Exit", command=self.root.quit, width=15, height=2).pack(side=tk.RIGHT)
+        # Exit/Abort button - changes function during operation
+        self.exit_abort_button = tk.Button(bottom_frame, text="Exit", command=self.root.quit,
+                                           width=15, height=2)
+        self.exit_abort_button.pack(side=tk.RIGHT)
+
+    def abort_export(self):
+        """Set the abort flag to stop the export process"""
+        if messagebox.askyesno("Abort Copy",
+                               "Are you sure you want to abort the copy process?\n\nFiles copied so far will remain in the destination folder."):
+            self.abort_flag = True
+            self.status_label.config(text="Aborting...")
+            self.time_label.config(text="Abort requested, stopping after current file...")
+            self.exit_abort_button.config(state=tk.DISABLED)
+            logger.info("User requested abort")
+
+    def set_button_to_abort(self):
+        """Change Exit button to Abort button"""
+        self.exit_abort_button.config(
+            text="Abort",
+            command=self.abort_export,
+            bg="#f44336",
+            fg="white",
+            font=('Arial', 10, 'bold')
+        )
+
+    def set_button_to_exit(self):
+        """Change Abort button back to Exit button"""
+        self.exit_abort_button.config(
+            text="Exit",
+            command=self.root.quit,
+            bg="#f0f0f0",
+            fg="black",
+            font=('TkDefaultFont'),
+            state=tk.NORMAL
+        )
+
+    def format_time(self, seconds):
+        """Format seconds into human-readable time string"""
+        if seconds < 60:
+            return f"{int(seconds)}s"
+        elif seconds < 3600:
+            minutes = int(seconds // 60)
+            secs = int(seconds % 60)
+            return f"{minutes}m {secs}s"
+        else:
+            hours = int(seconds // 3600)
+            minutes = int((seconds % 3600) // 60)
+            return f"{hours}h {minutes}m"
+
+    def update_time_estimation(self, current, total):
+        """Update the time estimation label (thread-safe)"""
+        if current == 0:
+            self.root.after(0, lambda: self.time_label.config(text="Calculating time..."))
+            return
+
+        elapsed = time.time() - self.start_time
+
+        # Calculate average time per file
+        avg_time_per_file = elapsed / current
+
+        # Estimate remaining time
+        remaining_files = total - current
+        estimated_remaining = avg_time_per_file * remaining_files
+
+        # Format the display
+        elapsed_str = self.format_time(elapsed)
+        remaining_str = self.format_time(estimated_remaining)
+
+        percentage = (current / total) * 100
+
+        time_text = f"Progress: {current}/{total} ({percentage:.1f}%) | Elapsed: {elapsed_str} | Remaining: ~{remaining_str}"
+        self.root.after(0, lambda: self.time_label.config(text=time_text))
 
     def setup_drag_drop(self):
         """Setup drag and drop for playlist listbox"""
@@ -185,7 +273,7 @@ class M3UExporter:
                 if file_path.lower().endswith(('.m3u', '.m3u8')):
                     # Check if already added
                     if file_path not in self.m3u_files:
-                        self.m3u_files.append(file_path)  # ADD to list, not assign to dict
+                        self.m3u_files.append(file_path)
                         display_name = os.path.basename(file_path)
                         self.files_listbox.insert(tk.END, display_name)
                         added_count += 1
@@ -402,8 +490,10 @@ class M3UExporter:
                     current_title = None
 
         except Exception as e:
-            messagebox.showerror("Parse Error", f"Error parsing {os.path.basename(m3u_file)}:\n{str(e)}")
             logger.error(f"Parse error: {e}")
+            # Use root.after for thread-safe messagebox
+            self.root.after(0, lambda: messagebox.showerror("Parse Error",
+                                                            f"Error parsing {os.path.basename(m3u_file)}:\n{str(e)}"))
 
         return tracks
 
@@ -466,7 +556,8 @@ class M3UExporter:
             logger.warning(f"Could not open output directory: {e}")
             # Don't show error to user - it's not critical
 
-    def export_files(self):
+    def start_export(self):
+        """Start the export in a separate thread"""
         if not self.m3u_files:
             messagebox.showwarning("No Files", "Please select at least one M3U file.")
             return
@@ -475,10 +566,27 @@ class M3UExporter:
             messagebox.showwarning("No Output", "Please select an output folder.")
             return
 
+        # Start export in a separate thread
+        self.export_thread = threading.Thread(target=self.export_files, daemon=True)
+        self.export_thread.start()
+
+    def export_files(self):
+        """Export files - runs in separate thread"""
+        # Reset abort flag
+        self.abort_flag = False
+
+        # Change Exit button to Abort button and disable Start button (thread-safe)
+        self.root.after(0, self.set_button_to_abort)
+        self.root.after(0, lambda: self.start_button.config(state=tk.DISABLED))
+
         total_copied = 0
         total_failed = 0
         all_failed_files = []
-        all_expected_files = {}  # Dictionary to track expected files per playlist
+        all_expected_files = {}
+
+        # Initialize timing
+        self.start_time = time.time()
+        self.files_processed = 0
 
         try:
             total_files = 0
@@ -486,11 +594,14 @@ class M3UExporter:
                 tracks = self.parse_m3u(m3u_file)
                 total_files += len(tracks)
 
-            self.progress['maximum'] = total_files
-            self.progress['value'] = 0
-            self.status_label.config(text="Copying files...")
+            self.root.after(0, lambda: self.progress.config(maximum=total_files, value=0))
+            self.root.after(0, lambda: self.status_label.config(text="Copying files..."))
+            self.root.after(0, lambda: self.time_label.config(text="Starting..."))
 
             for m3u_file in self.m3u_files:
+                if self.abort_flag:
+                    break
+
                 tracks = self.parse_m3u(m3u_file)
                 failed_files = []
                 expected_files = []
@@ -505,12 +616,18 @@ class M3UExporter:
                     playlist_folder = self.output_folder
 
                 for idx, (title, source_file) in enumerate(tracks, start=1):
+                    # Check abort flag
+                    if self.abort_flag:
+                        logger.info("Export aborted by user")
+                        break
+
                     if not os.path.exists(source_file):
                         failed_files.append(f"{title} (File not found)")
                         total_failed += 1
                         logger.warning(f"File not found: {source_file}")
-                        self.progress['value'] += 1
-                        self.root.update_idletasks()
+                        self.files_processed += 1
+                        self.root.after(0, lambda v=self.files_processed: self.progress.config(value=v))
+                        self.update_time_estimation(self.files_processed, total_files)
                         continue
 
                     _, ext = os.path.splitext(source_file)
@@ -538,8 +655,9 @@ class M3UExporter:
                         total_failed += 1
                         logger.error(f"Copy failed: {source_file} - {e}")
 
-                    self.progress['value'] += 1
-                    self.root.update_idletasks()
+                    self.files_processed += 1
+                    self.root.after(0, lambda v=self.files_processed: self.progress.config(value=v))
+                    self.update_time_estimation(self.files_processed, total_files)
 
                 # Store expected files for this playlist
                 all_expected_files[os.path.basename(m3u_file)] = {
@@ -552,8 +670,26 @@ class M3UExporter:
                     m3u_name = os.path.basename(m3u_file)
                     all_failed_files.extend([f"{m3u_name}: {f}" for f in failed_files])
 
-            # Verification phase
-            self.status_label.config(text="Verifying exported files...")
+            # Check if aborted
+            if self.abort_flag:
+                total_time = time.time() - self.start_time
+                total_time_str = self.format_time(total_time)
+
+                self.root.after(0, lambda: self.status_label.config(text="Aborted by user"))
+                self.root.after(0, lambda: self.time_label.config(text=f"Aborted after {total_time_str}"))
+
+                message = f"Copy process aborted by user.\n\n"
+                message += f"Files copied before abort: {total_copied}\n"
+                message += f"Time elapsed: {total_time_str}\n\n"
+                message += "Copied files remain in the destination folder."
+
+                self.root.after(0, lambda: messagebox.showwarning("Aborted", message))
+                logger.warning(f"Export aborted. Copied {total_copied} files before abort.")
+                return
+
+            # Verification phase (only if not aborted)
+            self.root.after(0, lambda: self.status_label.config(text="Verifying exported files..."))
+            self.root.after(0, lambda: self.time_label.config(text="Verifying..."))
             verification_issues = []
 
             for playlist_name, data in all_expected_files.items():
@@ -573,9 +709,14 @@ class M3UExporter:
                         logger.warning(
                             f"{playlist_name}: File count mismatch - expected {data['expected_count']}, found {len(actual_files)}")
 
+            # Calculate total time
+            total_time = time.time() - self.start_time
+            total_time_str = self.format_time(total_time)
+
             # Build completion message
             message = f"Operation complete!\n\nSuccessfully copied: {total_copied} files"
             message += f"\nProcessed {len(self.m3u_files)} playlist(s)"
+            message += f"\nTotal time: {total_time_str}"
 
             if all_failed_files:
                 message += f"\n\nFailed: {total_failed} files:\n"
@@ -587,24 +728,30 @@ class M3UExporter:
                 message += "\n\n⚠️ VERIFICATION WARNINGS:\n"
                 message += "\n".join(verification_issues)
 
-            self.status_label.config(text="Completed")
+            self.root.after(0, lambda: self.status_label.config(text="Completed"))
+            self.root.after(0, lambda: self.time_label.config(text=f"Completed in {total_time_str}"))
 
             if verification_issues or all_failed_files:
-                messagebox.showwarning("Complete with Issues", message)
+                self.root.after(0, lambda: messagebox.showwarning("Complete with Issues", message))
                 logger.warning(message)
             else:
-                messagebox.showinfo("Complete", message)
+                self.root.after(0, lambda: messagebox.showinfo("Complete", message))
                 logger.info(message)
 
             if self.open_outputfolder.get():
-                self.open_output_directory()
+                self.root.after(0, self.open_output_directory)
 
         except Exception as e:
-            self.status_label.config(text="Error occurred")
-            messagebox.showerror("Error", f"An error occurred:\n{str(e)}")
+            self.root.after(0, lambda: self.status_label.config(text="Error occurred"))
+            self.root.after(0, lambda: self.time_label.config(text=""))
+            self.root.after(0, lambda: messagebox.showerror("Error", f"An error occurred:\n{str(e)}"))
             logger.error(f"Export error: {e}")
         finally:
-            self.check_ready_to_export()
+            # Change Abort button back to Exit button (thread-safe)
+            self.root.after(0, self.set_button_to_exit)
+            self.root.after(0, self.check_ready_to_export)
+            # Reset abort flag
+            self.abort_flag = False
 
 
 def main():
